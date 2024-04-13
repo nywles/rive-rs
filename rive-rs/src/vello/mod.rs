@@ -2,13 +2,13 @@ use std::{fmt, io::Cursor};
 
 use image::io::Reader;
 use smallvec::SmallVec;
+use vello::kurbo::{Cap, Join, Stroke};
 use vello::{
     kurbo::{Affine, BezPath, Line, PathSeg, Point, Rect, Shape, Vec2},
     peniko::{
-        self, BlendMode, Brush, BrushRef, Cap, Color, ColorStop, ColorStopsSource, Fill, Format,
-        Join, Mix, Stroke,
+        self, BlendMode, Brush, BrushRef, Color, ColorStop, ColorStopsSource, Fill, Format, Mix,
     },
-    SceneBuilder, SceneFragment,
+    Scene,
 };
 
 mod util;
@@ -242,7 +242,7 @@ impl renderer::Paint for Paint {
     fn set_thickness(&mut self, thickness: f32) {
         loop {
             if let RenderStyle::Stroke(stroke) = &mut self.style {
-                stroke.width = thickness;
+                stroke.width = thickness as f64;
                 break;
             } else {
                 self.style = RenderStyle::Stroke(Stroke::new(0.0));
@@ -357,18 +357,17 @@ impl renderer::Image for Image {
 }
 
 pub struct Renderer {
-    scene: Box<SceneFragment>,
-    builder: SceneBuilder<'static>,
+    scene: Box<Scene>,
     transforms: Vec<Affine>,
     clips: Vec<bool>,
 }
 
 impl Renderer {
-    pub fn scene(&self) -> &SceneFragment {
+    pub fn scene(&self) -> &Scene {
         &self.scene
     }
 
-    pub fn into_scene(self) -> SceneFragment {
+    pub fn into_scene(self) -> Scene {
         *self.scene
     }
 
@@ -384,19 +383,10 @@ impl Renderer {
 impl Default for Renderer {
     #[inline]
     fn default() -> Self {
-        let mut scene = Box::<SceneFragment>::default();
-        let builder = {
-            let scene_mut: &mut SceneFragment = &mut scene;
-            SceneBuilder::for_fragment(unsafe {
-                // Quite a hack until we have a better way to do this in Vello.
-                // Pretend that the scene fragment pointer lives for 'static.
-                std::mem::transmute(scene_mut)
-            })
-        };
+        let mut scene = Box::<Scene>::default();
 
         Self {
             scene,
-            builder,
             transforms: vec![Affine::IDENTITY],
             clips: vec![false],
         }
@@ -426,7 +416,7 @@ impl renderer::Renderer for Renderer {
     fn state_pop(&mut self) {
         self.transforms.pop();
         if self.clips.pop().unwrap_or_default() {
-            self.builder.pop_layer();
+            self.scene.pop_layer();
         }
 
         if self.transforms.is_empty() {
@@ -446,10 +436,10 @@ impl renderer::Renderer for Renderer {
         let transform = *self.last_transform();
 
         if *self.last_clip() {
-            self.builder.pop_layer();
+            self.scene.pop_layer();
         }
 
-        self.builder
+        self.scene
             .push_layer(Mix::Clip, 1.0, transform, &path.inner);
 
         *self.last_clip() = true;
@@ -459,25 +449,26 @@ impl renderer::Renderer for Renderer {
     fn draw_path(&mut self, path: &Self::Path, paint: &Self::Paint) {
         let transform = *self.last_transform();
 
-        let builder = &mut self.builder;
-
         let skip_blending = paint.blend_mode == Mix::Normal.into();
 
         if !skip_blending {
-            builder.push_layer(paint.blend_mode, 1.0, transform, &path.inner.bounding_box());
+            self.scene
+                .push_layer(paint.blend_mode, 1.0, transform, &path.inner.bounding_box());
         }
 
         match &paint.style {
             RenderStyle::Fill => {
-                builder.fill(path.fill, transform, &paint.brush, None, &path.inner)
+                self.scene
+                    .fill(path.fill, transform, &paint.brush, None, &path.inner)
             }
             RenderStyle::Stroke(stroke) => {
-                builder.stroke(stroke, transform, &paint.brush, None, &path.inner)
+                self.scene
+                    .stroke(stroke, transform, &paint.brush, None, &path.inner)
             }
         }
 
         if !skip_blending {
-            builder.pop_layer();
+            self.scene.pop_layer();
         }
     }
 
@@ -492,18 +483,16 @@ impl renderer::Renderer for Renderer {
         ));
         let rect = Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
 
-        let builder = &mut self.builder;
-
         let skip_blending = mix == Mix::Normal && opacity == 1.0;
 
         if skip_blending {
-            builder.push_layer(mix, opacity, transform, &rect);
+            self.scene.push_layer(mix, opacity, transform, &rect);
         }
 
-        builder.draw_image(image, transform);
+        self.scene.draw_image(image, transform);
 
         if skip_blending {
-            builder.pop_layer();
+            self.scene.pop_layer();
         }
     }
 
@@ -546,15 +535,14 @@ impl renderer::Renderer for Renderer {
             let brush_transform =
                 util::map_uvs_to_triangle(&points, &uvs, image.width, image.height);
 
-            let builder = &mut self.builder;
-
             let skip_blending = mix == Mix::Normal;
 
             if !skip_blending {
-                builder.push_layer(mix, opacity, transform, &path.bounding_box());
+                self.scene
+                    .push_layer(mix, opacity, transform, &path.bounding_box());
             }
 
-            builder.fill(
+            self.scene.fill(
                 Fill::NonZero,
                 transform,
                 BrushRef::Image(image),
@@ -563,7 +551,7 @@ impl renderer::Renderer for Renderer {
             );
 
             if !skip_blending {
-                builder.pop_layer();
+                self.scene.pop_layer();
             }
         }
     }
