@@ -3,4 +3,4 @@ members = ["rive-rs", "examples/*"]
 resolver = "2"
 
 [workspace.dependencies]
-vello = "0.1.0"
+vello = "0.2.0"
